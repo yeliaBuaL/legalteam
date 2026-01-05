@@ -1,7 +1,7 @@
 import streamlit as st
 from agno.agent import Agent
-from agno.run.agent import RunOutput
 from agno.team import Team
+from agno.run.agent import RunOutput
 from agno.knowledge.knowledge import Knowledge
 from agno.vectordb.qdrant import Qdrant
 from agno.models.openai import OpenAIChat
@@ -9,104 +9,101 @@ from agno.knowledge.embedder.openai import OpenAIEmbedder
 import tempfile
 import os
 
-# -------------------------
+# ----------------------------------
 # OPTIONAL DUCKDUCKGO (SAFE)
-# -------------------------
+# ----------------------------------
 try:
     from agno.tools.duckduckgo import DuckDuckGoTools
     WEB_TOOLS = [DuckDuckGoTools()]
 except Exception:
     WEB_TOOLS = []
 
-
 COLLECTION_NAME = "legal_documents"
 
-
-# -------------------------
-# 🔐 SECRET HELPERS
-# -------------------------
+# ----------------------------------
+# SECRET HELPERS (LOCAL + CLOUD)
+# ----------------------------------
 def get_openai_key():
     return st.secrets.get("OPENAI_API_KEY") or st.session_state.get("openai_api_key")
-
 
 def get_qdrant_key():
     return st.secrets.get("QDRANT_API_KEY") or st.session_state.get("qdrant_api_key")
 
-
 def get_qdrant_url():
     return st.secrets.get("QDRANT_URL") or st.session_state.get("qdrant_url")
 
-
-# -------------------------
+# ----------------------------------
 # SESSION STATE
-# -------------------------
+# ----------------------------------
 def init_session_state():
-    for key in [
-        "openai_api_key",
-        "qdrant_api_key",
-        "qdrant_url",
-        "vector_db",
-        "legal_team",
-        "knowledge_base",
-        "processed_files",
-    ]:
-        if key not in st.session_state:
-            st.session_state[key] = set() if key == "processed_files" else None
+    defaults = {
+        "openai_api_key": None,
+        "qdrant_api_key": None,
+        "qdrant_url": None,
+        "vector_db": None,
+        "knowledge_base": None,
+        "legal_team": None,
+        "processed_files": set(),
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-
-# -------------------------
+# ----------------------------------
 # QDRANT INIT
-# -------------------------
+# ----------------------------------
 def init_qdrant():
-    if not all([get_qdrant_key(), get_qdrant_url(), get_openai_key()]):
+    if not all([get_openai_key(), get_qdrant_key(), get_qdrant_url()]):
         return None
 
     os.environ["OPENAI_API_KEY"] = get_openai_key()
 
-    try:
-        return Qdrant(
-            collection=COLLECTION_NAME,
-            url=get_qdrant_url(),
-            api_key=get_qdrant_key(),
-            embedder=OpenAIEmbedder(
-                id="text-embedding-3-small",
-                api_key=get_openai_key(),
-            ),
-        )
-    except Exception as e:
-        st.error(f"🔴 Qdrant connection failed: {e}")
-        return None
+    return Qdrant(
+        collection=COLLECTION_NAME,
+        url=get_qdrant_url(),
+        api_key=get_qdrant_key(),
+        embedder=OpenAIEmbedder(
+            id="text-embedding-3-small",
+            api_key=get_openai_key(),
+        ),
+    )
 
-
-# -------------------------
+# ----------------------------------
 # DOCUMENT INGEST
-# -------------------------
-def process_document(uploaded_file, vector_db: Qdrant):
+# ----------------------------------
+def ingest_pdf(uploaded_file, vector_db):
     os.environ["OPENAI_API_KEY"] = get_openai_key()
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(uploaded_file.getvalue())
         path = tmp.name
 
-    knowledge_base = Knowledge(vector_db=vector_db)
-
-    with st.spinner("📤 Indexing document…"):
-        knowledge_base.add_content(path=path)
+    kb = Knowledge(vector_db=vector_db)
+    kb.add_content(path=path)
 
     os.unlink(path)
-    return knowledge_base
+    return kb
 
+# ----------------------------------
+# ANALYSIS PROMPTS
+# ----------------------------------
+ANALYSIS_PROMPTS = {
+    "Contract Review": "Review the contract and identify key terms, obligations, and potential issues.",
+    "Legal Research": "Research relevant legal cases and precedents related to this document.",
+    "Risk Assessment": "Analyze potential legal risks and liabilities in this document.",
+    "Compliance Check": "Check this document for regulatory or legal compliance issues.",
+}
 
-# -------------------------
+# ----------------------------------
 # MAIN APP
-# -------------------------
+# ----------------------------------
 def main():
-    st.set_page_config(page_title="Legal Document Analyzer", layout="wide")
+    st.set_page_config(page_title="AI Legal Agent Team", layout="wide")
     init_session_state()
 
     st.title("AI Legal Agent Team 👨‍⚖️")
 
-    # -------- SIDEBAR --------
+    # ---------- SIDEBAR ----------
     with st.sidebar:
         st.header("🔑 API Configuration")
 
@@ -133,66 +130,109 @@ def main():
         if st.session_state.vector_db:
             st.success("✅ Connected to Qdrant")
 
-    # -------- MAIN --------
+        st.divider()
+
+        st.header("🔍 Analysis Options")
+
+        analysis_type = st.selectbox(
+            "Analysis Type",
+            [
+                "Contract Review",
+                "Legal Research",
+                "Risk Assessment",
+                "Compliance Check",
+                "Custom Query",
+            ],
+        )
+
+        st.subheader("🤖 Select Agents")
+        agent_selection = {
+            "Legal Researcher": st.checkbox("Legal Researcher", True),
+            "Contract Analyst": st.checkbox("Contract Analyst", True),
+            "Legal Strategist": st.checkbox("Legal Strategist", True),
+        }
+
+        selected_agents = [k for k, v in agent_selection.items() if v]
+
+        if not selected_agents:
+            st.warning("Select at least one agent")
+
+    # ---------- MAIN ----------
     if not st.session_state.vector_db:
-        st.info("👈 Add API keys to begin")
+        st.info("👈 Enter API keys to begin")
         return
 
-    uploaded_file = st.file_uploader("Upload Legal Document", type=["pdf"])
-
+    uploaded_file = st.file_uploader("Upload a legal document (PDF)", type=["pdf"])
     if not uploaded_file:
-        st.info("Upload a PDF to start")
+        st.info("👈 Upload a document to start analysis")
         return
 
     if uploaded_file.name not in st.session_state.processed_files:
-        kb = process_document(uploaded_file, st.session_state.vector_db)
-        st.session_state.knowledge_base = kb
-        st.session_state.processed_files.add(uploaded_file.name)
+        with st.spinner("📤 Processing document…"):
+            kb = ingest_pdf(uploaded_file, st.session_state.vector_db)
+            st.session_state.knowledge_base = kb
+            st.session_state.processed_files.add(uploaded_file.name)
 
-        legal_researcher = Agent(
-            name="Legal Researcher",
-            role="Legal research specialist",
-            model=OpenAIChat(id="gpt-5"),
+    kb = st.session_state.knowledge_base
+    model = OpenAIChat(id="gpt-5")
+
+    # ---------- AGENTS ----------
+    all_agents = {
+        "Legal Researcher": Agent(
+            "Legal Researcher",
+            model=model,
             tools=WEB_TOOLS,
             knowledge=kb,
             search_knowledge=True,
             markdown=True,
-        )
-
-        contract_analyst = Agent(
-            name="Contract Analyst",
-            role="Contract analysis specialist",
-            model=OpenAIChat(id="gpt-5"),
+        ),
+        "Contract Analyst": Agent(
+            "Contract Analyst",
+            model=model,
             knowledge=kb,
             search_knowledge=True,
             markdown=True,
-        )
-
-        legal_strategist = Agent(
-            name="Legal Strategist",
-            role="Legal strategy specialist",
-            model=OpenAIChat(id="gpt-5"),
+        ),
+        "Legal Strategist": Agent(
+            "Legal Strategist",
+            model=model,
             knowledge=kb,
             search_knowledge=True,
             markdown=True,
-        )
+        ),
+    }
 
-        st.session_state.legal_team = Team(
-            name="Legal Team",
-            model=OpenAIChat(id="gpt-5"),
-            members=[legal_researcher, contract_analyst, legal_strategist],
-            knowledge=kb,
-            search_knowledge=True,
-            markdown=True,
-        )
+    active_agents = [all_agents[name] for name in selected_agents]
 
-    query = st.text_area("Ask a legal question about the document")
+    team = Team(
+        name="Legal Team",
+        model=model,
+        members=active_agents,
+        knowledge=kb,
+        search_knowledge=True,
+        markdown=True,
+    )
 
-    if st.button("Analyze") and query:
-        os.environ["OPENAI_API_KEY"] = get_openai_key()
-        response: RunOutput = st.session_state.legal_team.run(query)
-        st.markdown(response.content or "")
+    # ---------- QUERY ----------
+    if analysis_type == "Custom Query":
+        query = st.text_area("Enter your custom legal question")
+    else:
+        query = ANALYSIS_PROMPTS[analysis_type]
+        st.info(query)
 
+    if st.button("Analyze"):
+        if not selected_agents:
+            st.warning("Select at least one agent")
+            return
 
+        if not query:
+            st.warning("Enter a query")
+            return
+
+        with st.spinner("🧠 Analyzing document…"):
+            response: RunOutput = team.run(query)
+            st.markdown(response.content or "")
+
+# ----------------------------------
 if __name__ == "__main__":
     main()
